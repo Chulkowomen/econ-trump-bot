@@ -53,11 +53,14 @@ def translate(text: str) -> str:
         return text
 
 
-def build_message(events_today: list) -> str:
-    if not events_today:
-        return "📅 *Економічний календар*\nСьогодні значущих подій (Medium/High impact) не очікується."
+def build_message(events_today: list, current: datetime) -> str:
+    date_str = current.strftime("%a, %d %b %Y")
+    header = f"📅 *Економічний календар на сьогодні*\n🕐 {date_str}"
 
-    lines = ["📅 *Економічний календар на сьогодні*\n"]
+    if not events_today:
+        return header + "\n\nСьогодні значущих подій (Medium/High impact) не очікується."
+
+    lines = [header, ""]
     for ev in events_today:
         emoji = IMPACT_EMOJI.get(ev["impact"], "⚪")
         time_str = ev["time_local"].strftime("%H:%M")
@@ -118,7 +121,7 @@ def main() -> None:
         print(f"⚠️ Не вдалось розпарсити дату у {parse_errors} подіях — перевір структуру JSON-фіда.")
 
     events_today.sort(key=lambda e: e["time_local"])
-    message = build_message(events_today)
+    message = build_message(events_today, current)
     send_telegram(message)
     print(f"Надіслано. Подій сьогодні: {len(events_today)}")
 
