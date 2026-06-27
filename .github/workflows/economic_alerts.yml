@@ -1,0 +1,38 @@
+name: economic-alerts
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'  # кожні 5 хвилин — перевіряємо, чи щось виходить за 15 хв
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  check-upcoming:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run alerts script
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python economic_alerts.py
+
+      - name: Commit updated state
+        run: |
+          git config user.name "econ-alerts-bot"
+          git config user.email "actions@users.noreply.github.com"
+          if [ -f state_calendar_alerts.json ]; then
+            git add state_calendar_alerts.json
+            git diff --staged --quiet || git commit -m "chore: update state_calendar_alerts.json"
+            git push
+          fi
