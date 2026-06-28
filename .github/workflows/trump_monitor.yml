@@ -2,7 +2,7 @@ name: trump-monitor
 
 on:
   schedule:
-    - cron: '*/5 * * * *'  # кожні 5 хвилин — мінімальний інтервал, який підтримує GitHub
+    - cron: '*/5 * * * *'
   workflow_dispatch: {}
 
 permissions:
@@ -24,7 +24,8 @@ jobs:
       - name: Run monitor script
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CF_USERS_ENDPOINT: ${{ secrets.CF_USERS_ENDPOINT }}
+          CF_API_SECRET: ${{ secrets.CF_API_SECRET }}
         run: python trump_monitor.py
 
       - name: Commit updated state
