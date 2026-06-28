@@ -1,8 +1,5 @@
 """
-Попередження за 15 хвилин до виходу економічної новини → Telegram.
-Запускається кожні 5 хвилин. Якщо до події Medium/High impact лишилось
-0–15 хвилин і про неї ще не попереджали сьогодні — надсилає алерт.
-Кілька подій з однаковим часом групуються в одне повідомлення.
+Попередження за 15 хвилин до виходу новини → кожному користувачу окремо.
 """
 
 import os
@@ -13,23 +10,37 @@ from zoneinfo import ZoneInfo
 from deep_translator import GoogleTranslator
 
 FF_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-TZ = ZoneInfo("Europe/Madrid")
-LEAD_MINUTES = 15  # за скільки хвилин до події попереджати
+REFERENCE_TZ = ZoneInfo("Europe/Madrid")
+LEAD_MINUTES = 15
+QUIET_START, QUIET_END = 22, 7
 STATE_FILE = "state_calendar_alerts.json"
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+USERS_ENDPOINT = os.environ["CF_USERS_ENDPOINT"]
+CF_API_SECRET = os.environ["CF_API_SECRET"]
 
-IMPACT_EMOJI = {
-    "High": "🔴",
-    "Medium": "🟠",
-    "Low": "🟡",
-    "Holiday": "⚪",
-}
+IMPACT_EMOJI = {"High": "🔴", "Medium": "🟠", "Low": "🟡", "Holiday": "⚪"}
+_translate_cache = {}
 
 
-def now_madrid() -> datetime:
-    return datetime.now(TZ)
+def fetch_users() -> list:
+    resp = requests.get(USERS_ENDPOINT, headers={"X-Api-Secret": CF_API_SECRET}, timeout=20)
+    resp.raise_for_status()
+    users = resp.json()
+    return [u for u in users if u.get("step") == "done" and u.get("active", True)
+            and u.get("notif_type") in ("calendar", "both")]
+
+
+def safe_tz(name: str) -> ZoneInfo:
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        return ZoneInfo("Europe/Madrid")
+
+
+def is_quiet_hours(tz: ZoneInfo) -> bool:
+    h = datetime.now(tz).hour
+    return h >= QUIET_START or h < QUIET_END
 
 
 def fetch_events() -> list:
@@ -38,20 +49,16 @@ def fetch_events() -> list:
     return resp.json()
 
 
-def parse_event_time(raw_date: str) -> datetime:
-    dt = datetime.fromisoformat(raw_date)
-    return dt.astimezone(TZ)
-
-
-def translate(text: str) -> str:
-    if not text:
-        return text
+def translate_cached(text: str) -> str:
+    if text in _translate_cache:
+        return _translate_cache[text]
     try:
-        return GoogleTranslator(source="en", target="uk").translate(text)
+        result = GoogleTranslator(source="en", target="uk").translate(text)
     except Exception as e:
         print(f"Переклад не вдався для '{text}': {e}")
-        return text
-
+        result = text
+    _translate_cache[text] = result
+    return result
 
 def load_state(today_str: str) -> dict:
     if os.path.exists(STATE_FILE):
@@ -59,8 +66,7 @@ def load_state(today_str: str) -> dict:
             state = json.load(f)
         if state.get("date") == today_str:
             return state
-    # новий день — починаємо зі свіжим списком сповіщених часів
-    return {"date": today_str, "alerted_times": []}
+    return {"date": today_str, "alerted_keys": []}
 
 
 def save_state(state: dict) -> None:
@@ -68,42 +74,61 @@ def save_state(state: dict) -> None:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
-def send_telegram(text: str) -> None:
+def build_alert(events: list, user_tz: ZoneInfo, lang: str) -> str:
+    header = f"⏰ *In {LEAD_MINUTES} minutes:*" if lang == "en" else f"⏰ *За {LEAD_MINUTES} хвилин:*"
+    f_label, p_label = ("Forecast", "Previous") if lang == "en" else ("Прогноз", "Попереднє")
+    lines = [header, ""]
+    for ev in events:
+        local_dt = ev["dt_utc"].astimezone(user_tz)
+        emoji = IMPACT_EMOJI.get(ev["impact"], "⚪")
+        title = ev["title"] if lang == "en" else translate_cached(ev["title"])
+        line = f"{emoji} {local_dt.strftime('%H:%M')} | {ev['country']} | {title}"
+        forecast = ev.get("forecast") or "—"
+        previous = ev.get("previous") or "—"
+        if forecast != "—" or previous != "—":
+            line += f"\n     {f_label}: {forecast} | {p_label}: {previous}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def send_telegram(chat_id, text: str, quiet: bool) -> None:
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     for i in range(0, len(text), 3500):
         chunk = text[i:i + 3500]
-        r = requests.post(
-            url,
-            data={"chat_id": CHAT_ID, "text": chunk, "parse_mode": "Markdown"},
-            timeout=20,
-        )
+        data = {"chat_id": chat_id, "text": chunk, "parse_mode": "Markdown"}
+        if quiet:
+            data["disable_notification"] = "true"
+        r = requests.post(url, data=data, timeout=20)
         if not r.ok:
-            print("Telegram API помилка:", r.text)
-        r.raise_for_status()
+            print(f"Telegram API помилка для {chat_id}:", r.text)
 
 
 def main() -> None:
-    current = now_madrid()
-    today = current.date()
-    today_str = today.isoformat()
-
+    current = datetime.now(REFERENCE_TZ)
+    today_str = current.date().isoformat()
     state = load_state(today_str)
-    alerted = set(state["alerted_times"])
+    alerted = set(state["alerted_keys"])
+
+    users = fetch_users()
+    if not users:
+        print("Немає користувачів з підпискою на календар.")
+        return
 
     raw_events = fetch_events()
+    today_ref = current.date()
 
-    # групуємо сьогоднішні Medium/High події за часом (HH:MM)
     groups = {}
     for ev in raw_events:
         try:
-            local_dt = parse_event_time(ev["date"])
+            dt = datetime.fromisoformat(ev["date"])
         except Exception:
             continue
-        if local_dt.date() != today or ev.get("impact") not in ("High", "Medium"):
+        if dt.astimezone(REFERENCE_TZ).date() != today_ref or ev.get("impact") not in ("High", "Medium"):
             continue
-        time_key = local_dt.strftime("%H:%M")
-        groups.setdefault(time_key, {"dt": local_dt, "events": []})
-        groups[time_key]["events"].append({
+        key = dt.isoformat()
+        groups.setdefault(key, {"dt_utc": dt, "events": []})
+        groups[key]["events"].append({
+            "dt_utc": dt,
             "country": ev.get("country", "?"),
             "title": ev.get("title", "?"),
             "impact": ev.get("impact", "Low"),
@@ -111,28 +136,26 @@ def main() -> None:
             "previous": ev.get("previous"),
         })
 
+    now_utc = datetime.now(ZoneInfo("UTC"))
     sent_any = False
-    for time_key, group in sorted(groups.items()):
-        if time_key in alerted:
+    for key, group in sorted(groups.items()):
+        if key in alerted:
             continue
-        minutes_until = (group["dt"] - current).total_seconds() / 60
-        if 0 < minutes_until <= LEAD_MINUTES:
-            lines = [f"⏰ *За {LEAD_MINUTES} хвилин:*", ""]
-            for ev in group["events"]:
-                emoji = IMPACT_EMOJI.get(ev["impact"], "⚪")
-                title_uk = translate(ev["title"])
-                line = f"{emoji} {time_key} | {ev['country']} | {title_uk}"
-                forecast = ev.get("forecast") or "—"
-                previous = ev.get("previous") or "—"
-                if forecast != "—" or previous != "—":
-                    line += f"\n     Прогноз: {forecast} | Попереднє: {previous}"
-                lines.append(line)
-            send_telegram("\n".join(lines))
-            alerted.add(time_key)
-            sent_any = True
-            print(f"Надіслано попередження за {time_key}")
+        minutes_until = (group["dt_utc"] - now_utc).total_seconds() / 60
+        if not (0 < minutes_until <= LEAD_MINUTES):
+            continue
 
-    state["alerted_times"] = sorted(alerted)
+        for user in users:
+            tz = safe_tz(user.get("timezone", "Europe/Madrid"))
+            lang = "en" if user.get("lang") == "en" else "uk"
+            message = build_alert(group["events"], tz, lang)
+            send_telegram(user["chat_id"], message, is_quiet_hours(tz))
+
+        alerted.add(key)
+        sent_any = True
+        print(f"Надіслано попередження за {key} для {len(users)} користувачів")
+
+    state["alerted_keys"] = sorted(alerted)
     save_state(state)
 
     if not sent_any:
