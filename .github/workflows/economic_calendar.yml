@@ -2,8 +2,8 @@ name: economic-calendar
 
 on:
   schedule:
-    - cron: '0 * * * *'   # щогодини; сам скрипт вирішує, чи зараз 8:00 за Мадридом
-  workflow_dispatch: {}    # дозволяє запустити вручну кнопкою "Run workflow" для тесту
+    - cron: '0 * * * *'
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -24,7 +24,8 @@ jobs:
       - name: Run calendar script
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CF_USERS_ENDPOINT: ${{ secrets.CF_USERS_ENDPOINT }}
+          CF_API_SECRET: ${{ secrets.CF_API_SECRET }}
         run: python economic_calendar.py
 
       - name: Commit heartbeat file
@@ -36,5 +37,5 @@ jobs:
             git diff --staged --quiet || git commit -m "chore: update last_run.json"
             git push
           else
-            echo "last_run.json ще не створено (скрипт пропустив запуск, бо не 8:00 за Мадридом) — нічого комітити."
+            echo "last_run.json ще не створено — нічого комітити."
           fi
