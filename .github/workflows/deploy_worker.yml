@@ -1,0 +1,21 @@
+name: deploy-worker
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to Cloudflare Workers
+        run: |
+          curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/workers/scripts/econ-trump-bot-webhook" \
+            -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
+            -F 'metadata={"main_module":"worker.js","compatibility_date":"2026-06-27","bindings":[{"type":"kv_namespace","name":"BOT_USERS","namespace_id":"191a9609fb3948cf8deac79d0436d7f7"},{"type":"secret_text","name":"TELEGRAM_BOT_TOKEN","text":"8723463950:AAGlvMuhiYk8JMx3aGBSjlj5iWNBxvyPRsI"},{"type":"secret_text","name":"API_SECRET","text":"fdK9mPx2qLvT8rJ4nZc7wYbE3hG6sA1u"}]};type=application/json' \
+            -F "worker.js=@cf_worker/worker.js;type=application/javascript+module" \
+            -o response.json
+          echo "--- response ---"
+          cat response.json
+          python3 -c "import json,sys; d=json.load(open('response.json')); sys.exit(0 if d.get('success') else 1)"
