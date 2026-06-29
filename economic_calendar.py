@@ -1,8 +1,13 @@
 """
 Щоденний економічний календар → Telegram, кожному користувачу окремо.
 Список користувачів (мова, часовий пояс, тип сповіщень) тягнемо з Cloudflare Worker.
-Запускається через GitHub Actions щогодини; кожному користувачу надсилається
-рівно о 8:00 ЙОГО місцевого часу (не Мадрида).
+
+Запускається кожні 5 хвилин (а не раз на годину!) — GitHub Actions періодично
+пропускає окремі заплановані запуски (підтверджений факт, не наша помилка),
+тож з частотою "раз на годину" одне пропущене спрацювання = пропущений
+календар на весь день. При запуску кожні 5 хв і дедуплікації "вже надіслано
+сьогодні" втрата одного тику майже нічого не важить — наступний за 5 хв
+все одно надішле.
 """
 
 import os
@@ -16,6 +21,7 @@ FF_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 REFERENCE_TZ = ZoneInfo("Europe/Madrid")
 TARGET_HOUR = 8
 QUIET_START, QUIET_END = 22, 7
+STATE_FILE = "state_calendar_sent.json"
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 USERS_ENDPOINT = os.environ["CF_USERS_ENDPOINT"]
@@ -44,6 +50,7 @@ def is_quiet_hours(tz: ZoneInfo) -> bool:
     h = datetime.now(tz).hour
     return h >= QUIET_START or h < QUIET_END
 
+
 def fetch_events() -> list:
     resp = requests.get(FF_URL, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
     resp.raise_for_status()
@@ -64,6 +71,21 @@ def translate_cached(text: str) -> str:
         result = text
     _translate_cache[text] = result
     return result
+
+
+def load_state() -> dict:
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_state(state: dict) -> None:
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
 
 
 def build_message(events_today: list, user_tz: ZoneInfo, lang: str) -> str:
@@ -112,6 +134,8 @@ def main() -> None:
         print("Немає користувачів з підпискою на календар.")
         return
 
+    state = load_state()
+
     raw_events = fetch_events()
     today_ref = datetime.now(REFERENCE_TZ).date()
 
@@ -137,14 +161,22 @@ def main() -> None:
 
     sent = 0
     for user in users:
+        chat_id = str(user["chat_id"])
         tz = safe_tz(user.get("timezone", "Europe/Madrid"))
+        today_str_user = datetime.now(tz).date().isoformat()
+
+        if state.get(chat_id) == today_str_user:
+            continue
         if datetime.now(tz).hour != TARGET_HOUR:
             continue
+
         lang = "en" if user.get("lang") == "en" else "uk"
         message = build_message(events_today, tz, lang)
-        send_telegram(user["chat_id"], message, is_quiet_hours(tz))
+        send_telegram(chat_id, message, is_quiet_hours(tz))
+        state[chat_id] = today_str_user
         sent += 1
 
+    save_state(state)
     print(f"Надіслано {sent} користувачам. Подій сьогодні: {len(events_today)}")
 
     with open("last_run.json", "w", encoding="utf-8") as f:
