@@ -34,9 +34,43 @@ export default {
       return new Response("OK");
     }
 
+    if (request.method === "GET" && url.pathname === "/debug-trigger") {
+      const auth = request.headers.get("X-Api-Secret");
+      if (auth !== env.API_SECRET) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      const diag = {
+        hasGHPAT: !!env.GH_PAT,
+        ghPatLen: (env.GH_PAT || "").length,
+        ghOwner: env.GH_OWNER || null,
+        ghRepo: env.GH_REPO || null,
+      };
+      try {
+        const ghUrl = `https://api.github.com/repos/${env.GH_OWNER}/${env.GH_REPO}/actions/workflows/economic_calendar.yml/dispatches`;
+        const resp = await fetch(ghUrl, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${env.GH_PAT}`,
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "econ-trump-bot-cron",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ ref: "main" }),
+        });
+        diag.status = resp.status;
+        diag.body = await resp.text();
+      } catch (e) {
+        diag.error = String(e);
+      }
+      return new Response(JSON.stringify(diag, null, 2), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     return new Response("econ-trump-bot webhook is running", { status: 200 });
   },
 
+  // Cloudflare Cron Trigger
   async scheduled(event, env, ctx) {
     const workflows = ["economic_calendar.yml", "economic_alerts.yml", "trump_monitor.yml"];
     for (const wf of workflows) {
