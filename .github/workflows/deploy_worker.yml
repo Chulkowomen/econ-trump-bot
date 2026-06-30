@@ -10,12 +10,25 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Deploy to Cloudflare Workers
+        env:
+          GH_PAT_VALUE: ${{ secrets.GH_PAT }}
         run: |
           curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/workers/scripts/econ-trump-bot-webhook" \
             -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
-            -F 'metadata={"main_module":"worker.js","compatibility_date":"2026-06-27","bindings":[{"type":"kv_namespace","name":"BOT_USERS","namespace_id":"191a9609fb3948cf8deac79d0436d7f7"},{"type":"secret_text","name":"TELEGRAM_BOT_TOKEN","text":"8723463950:AAGlvMuhiYk8JMx3aGBSjlj5iWNBxvyPRsI"},{"type":"secret_text","name":"API_SECRET","text":"fdK9mPx2qLvT8rJ4nZc7wYbE3hG6sA1u"}]};type=application/json' \
+            -F "metadata={\"main_module\":\"worker.js\",\"compatibility_date\":\"2026-06-27\",\"bindings\":[{\"type\":\"kv_namespace\",\"name\":\"BOT_USERS\",\"namespace_id\":\"191a9609fb3948cf8deac79d0436d7f7\"},{\"type\":\"secret_text\",\"name\":\"TELEGRAM_BOT_TOKEN\",\"text\":\"8723463950:AAGlvMuhiYk8JMx3aGBSjlj5iWNBxvyPRsI\"},{\"type\":\"secret_text\",\"name\":\"API_SECRET\",\"text\":\"fdK9mPx2qLvT8rJ4nZc7wYbE3hG6sA1u\"},{\"type\":\"secret_text\",\"name\":\"GH_PAT\",\"text\":\"$GH_PAT_VALUE\"},{\"type\":\"plain_text\",\"name\":\"GH_OWNER\",\"text\":\"Chulkowomen\"},{\"type\":\"plain_text\",\"name\":\"GH_REPO\",\"text\":\"econ-trump-bot\"}]};type=application/json" \
             -F "worker.js=@cf_worker/worker.js;type=application/javascript+module" \
             -o response.json
-          echo "--- response ---"
+          echo "--- deploy response ---"
           cat response.json
           python3 -c "import json,sys; d=json.load(open('response.json')); sys.exit(0 if d.get('success') else 1)"
+
+      - name: Set Cron Trigger (every 5 minutes)
+        run: |
+          curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/workers/scripts/econ-trump-bot-webhook/schedules" \
+            -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '[{"cron":"*/5 * * * *"}]' \
+            -o schedule_response.json
+          echo "--- schedule response ---"
+          cat schedule_response.json
+          python3 -c "import json,sys; d=json.load(open('schedule_response.json')); sys.exit(0 if d.get('success') else 1)"
