@@ -36,7 +36,31 @@ export default {
 
     return new Response("econ-trump-bot webhook is running", { status: 200 });
   },
+
+  async scheduled(event, env, ctx) {
+    const workflows = ["economic_calendar.yml", "economic_alerts.yml", "trump_monitor.yml"];
+    for (const wf of workflows) {
+      ctx.waitUntil(triggerWorkflow(env, wf));
+    }
+  },
 };
+
+async function triggerWorkflow(env, workflowFile) {
+  const url = `https://api.github.com/repos/${env.GH_OWNER}/${env.GH_REPO}/actions/workflows/${workflowFile}/dispatches`;
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${env.GH_PAT}`,
+      "Accept": "application/vnd.github+json",
+      "User-Agent": "econ-trump-bot-cron",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ ref: "main" }),
+  });
+  if (!resp.ok) {
+    console.log(`Trigger failed for ${workflowFile}: ${resp.status} ${await resp.text()}`);
+  }
+}
 
 async function tgCall(env, method, params) {
   const url = "https://api.telegram.org/bot" + env.TELEGRAM_BOT_TOKEN + "/" + method;
